@@ -42,7 +42,7 @@ npm run dev
 
 公开预览会部署到 GitHub Pages：<https://3977871701-spec.github.io/zhaoxiaozhu-sales-copilot/>。任何人都可以直接打开并体验本地规则、通话看板和浏览器本机保存功能。
 
-公开预览不会携带任何人的模型密钥，也不会开放共享的 AI 接口。需要真实 MiniMax M3 时，访客可点击页面顶部的“接入 MiniMax Key”，选择中国区或国际区，输入**自己的** Key 并完成测试后使用真实 AI。
+公开预览不会携带任何人的模型密钥，也不会开放共享的 AI 接口。需要真实 MiniMax M3 时，访客可点击页面顶部的“配置 API Key”，选择中国区或国际区，输入**自己的** Key 并完成测试后使用真实 AI。
 
 该临时 Key 只存在于当前页面内存：不会写入 localStorage、sessionStorage、Cookie、GitHub 或本项目服务器；刷新、关闭页面或重新打开页面都会清空。若需供自己的团队稳定使用，也可以自行克隆仓库，复制 `.env.example` 为 `.env`，填入自己的 Token Plan API Key 后运行 `npm start`；`.env` 已被 Git 忽略。
 

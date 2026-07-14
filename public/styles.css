@@ -39,8 +39,8 @@ button:disabled { cursor: not-allowed; }
 .service-state.demo .status-dot { background: #8b998d; box-shadow: 0 0 0 4px rgba(139,153,141,.12); }
 .service-state.error { color: #a45548; }
 .service-state.error .status-dot { background: #c06050; box-shadow: 0 0 0 4px rgba(192,96,80,.12); }
-.connect-key-button { display: inline-flex; align-items: center; justify-content: center; gap: 6px; height: 33px; padding: 0 10px; color: var(--green); border: 1px solid #b8d8c3; border-radius: 8px; background: #f3f8f2; font-size: 11px; font-weight: 760; white-space: nowrap; transition: .15s; }
-.connect-key-button:hover { color: #fff; border-color: var(--green); background: var(--green); box-shadow: 0 6px 14px rgba(25,91,77,.16); }
+.connect-key-button { display: inline-flex; flex: 0 0 auto; align-items: center; justify-content: center; gap: 6px; height: 33px; padding: 0 11px; color: #fff; border: 1px solid var(--green); border-radius: 8px; background: var(--green); box-shadow: 0 5px 12px rgba(25,91,77,.15); font-size: 11px; font-weight: 760; white-space: nowrap; transition: .15s; }
+.connect-key-button:hover { color: #fff; border-color: var(--green-dark); background: var(--green-dark); box-shadow: 0 7px 16px rgba(25,91,77,.2); }
 .connect-key-button:focus-visible, .dialog-close-button:focus-visible { outline: 3px solid rgba(73,142,105,.3); outline-offset: 2px; }
 .connect-key-icon { font-size: 15px; font-weight: 850; line-height: 1; }
 .connect-key-short { display: none; }
@@ -334,6 +334,9 @@ body.focus-mode .call-summary { margin-top: auto; }
   .call-glance { flex: 1 1 auto; }
   .call-grid { grid-template-areas: "coach" "transcript"; grid-template-columns: 1fr; }
   .call-coach-panel { min-height: 0; }
+}
+@media (max-width: 900px) {
+  .brand small, .topbar-nav { display: none; }
 }
 @media (max-width: 620px) {
   .topbar { height: 59px; gap: 8px; padding-inline: 17px; }
