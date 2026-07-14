@@ -19,6 +19,11 @@
         <a href="#profile-workspace">学员画像</a>
         <a href="#leads">待跟进</a>
       </nav>
+      <button class="connect-key-button" id="connect-key-button" type="button" aria-haspopup="dialog">
+        <span class="connect-key-icon" aria-hidden="true">⌁</span>
+        <span class="connect-key-full">接入 MiniMax Key</span>
+        <span class="connect-key-short">接入 Key</span>
+      </button>
       <div class="service-state" id="service-state" aria-live="polite">
         <span class="status-dot"></span>
         正在检查服务
@@ -95,6 +100,7 @@
             <textarea id="call-transcript" rows="10" maxlength="8000" placeholder="实时转写会出现在这里；也可以粘贴电话系统导出的文字。建议标出“客户：”“销售：”以提高提示质量。"></textarea>
             <div class="live-partial" id="live-partial" aria-live="polite"></div>
             <div class="call-footnote">浏览器只能转写它能听到的麦克风音频。若使用座机、SIP 或云呼叫系统，要实现双方稳定转写，下一阶段可接入你们的电话系统/CTI 语音流。</div>
+            <div class="call-profile-note"><span aria-hidden="true">↗</span>通话分析会补充已明确的空白画像，不覆盖手动填写内容。</div>
           </section>
 
           <section class="call-coach-panel" aria-label="实时销售提示" aria-live="polite">
@@ -329,6 +335,42 @@
     </main>
 
     <footer>招小助 · 本地招生销售辅助工具 <span>所有对外内容请经人工审核</span></footer>
+
+    <dialog class="key-dialog" id="key-dialog" aria-labelledby="key-dialog-title" aria-describedby="key-dialog-description key-session-note">
+      <div class="key-dialog-card">
+        <div class="key-dialog-heading">
+          <div>
+            <p class="step">MINIMAX M3 / 临时连接</p>
+            <h2 id="key-dialog-title">临时接入 MiniMax M3</h2>
+          </div>
+          <button class="dialog-close-button" id="close-key-dialog" type="button" aria-label="关闭 MiniMax Key 接入窗口">×</button>
+        </div>
+        <p class="key-dialog-description" id="key-dialog-description">输入本次使用的 MiniMax Key，先完成连通性测试，再在当前页面启用真实 AI 生成。</p>
+        <div class="key-session-note" id="key-session-note">
+          <span aria-hidden="true">◌</span>
+          <p><strong>仅本次打开页面临时使用</strong>；刷新/关闭即清空；不保存到浏览器、GitHub 或服务器。</p>
+        </div>
+        <form class="key-form" id="key-form" novalidate>
+          <label class="field" for="key-region">
+            <span>服务区域</span>
+            <select id="key-region" name="region">
+              <option value="cn">中国区（api.minimaxi.com）</option>
+              <option value="global">国际区（api.minimax.io）</option>
+            </select>
+          </label>
+          <label class="field" for="key-input">
+            <span>MiniMax Key</span>
+            <input id="key-input" name="key" type="password" inputmode="text" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="粘贴本次使用的 Key" aria-describedby="key-session-note key-dialog-status" />
+          </label>
+          <p class="key-dialog-status" id="key-dialog-status" role="status" aria-live="polite">尚未接入，当前可继续使用本地演示。</p>
+          <div class="key-dialog-actions">
+            <button class="button primary" id="save-key-button" type="submit">测试并接入</button>
+            <button class="button ghost" id="clear-key-button" type="button">断开</button>
+          </div>
+        </form>
+      </div>
+    </dialog>
+
     <div class="toast" id="toast" role="status" aria-live="polite"></div>
     <script type="module" src="./app.js"></script>
   </body>

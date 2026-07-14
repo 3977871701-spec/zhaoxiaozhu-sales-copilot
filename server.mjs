@@ -186,11 +186,23 @@ function buildCallSystemPrompt(knowledge) {
 3. 不要索取或复述身份证号、银行卡、验证码、手机号、微信号、证件材料；也不评价年龄、性别等不相关个人特征。
 4. 对费用、退款、学历用途、资格、毕业、考试和政策问题，提示销售核对已审核的当地当期官方资料；费用要分项透明，不得建议“客户不问就不说”；不要用虚假紧迫感促单。
 5. 输出给销售的建议语气真诚、不施压，且尽量一次只推进一个问题。
+6. profileUpdates 只记录本段通话中客户明确说出的、可用于画像的非敏感信息；不得根据既有画像、语气或常识推测。客户没有明确说出的字段必须使用空字符串，concerns 必须使用空数组。枚举字段只能逐字使用下方列出的选项；不要写“近期”“3-6小时”“费用别太高”等自由文本，不能匹配时留空。不得写入或复述手机号、微信号、证件号、地址、银行卡、验证码等敏感信息。
 
 只输出合法 JSON，不要 Markdown。JSON 外不得有任何解释；所有字符串必须使用双引号，数组和对象必须完整闭合，字符串中的换行必须写成 \\n。输出前自行检查引号、逗号、方括号和花括号。固定结构：
 {
   "stage":"需求澄清/费用核验/考试顾虑/学习节奏/建立信任/用途核验/方案比较/报名时点核验/高风险澄清等",
   "signals":["最多 4 个客户意图或风险信号"],
+  "profileUpdates":{
+    "region":"仅当客户明确说出省市或地区时填写，否则为空字符串",
+    "education":"空字符串，或严格为 初中及以下 / 高中/中专 / 大专 / 本科及以上 之一",
+    "goal":"空字符串，或严格为 专升本 / 高起专 / 第二学历 / 职业发展 之一",
+    "major":"仅当客户明确说出意向专业时填写，否则为空字符串",
+    "workStatus":"空字符串，或严格为 在职 / 待业/求职 / 全职带娃 / 学生 / 其他 之一",
+    "weeklyHours":"空字符串，或严格为 每周 1–3 小时 / 每周 3–6 小时 / 每周 6 小时以上 之一",
+    "urgency":"空字符串，或严格为 近期要报名 / 3–6 个月内 / 半年以后 / 只是了解 之一",
+    "budget":"空字符串，或严格为 预算敏感 / 可比较方案 / 以适合为主 之一",
+    "concerns":["只可为 担心没时间 / 担心考试 / 预算问题 / 学历用途 / 专业选择 / 机构资质；没有则为空数组"]
+  },
   "nextLine":"销售可说的下一句，使用中文引号，不超过 110 字",
   "nextQuestion":"一个自然的追问，不超过 70 字",
   "risk":"本轮必须避免或核验的事项，不超过 100 字",
@@ -264,7 +276,7 @@ function completionMeta(payload) {
   };
 }
 
-async function requestModelCompletion({ system, user, temperature, maxCompletionTokens, disableThinking = false, retryOnEmpty = true }) {
+async function requestModelCompletion({ system, user, temperature, maxCompletionTokens, disableThinking = false, retryOnEmpty = true, retryOnTransient = true }) {
   const response = await fetch(`${baseUrl}/chat/completions`, {
     method: 'POST',
     headers: {
@@ -275,6 +287,10 @@ async function requestModelCompletion({ system, user, temperature, maxCompletion
     signal: AbortSignal.timeout(modelRequestTimeoutMs)
   });
   if (!response.ok) {
+    if (retryOnTransient && [429, 500, 502, 503, 504, 529].includes(response.status)) {
+      await new Promise((resolve) => setTimeout(resolve, 650));
+      return requestModelCompletion({ system, user, temperature, maxCompletionTokens, disableThinking, retryOnEmpty, retryOnTransient: false });
+    }
     const detail = (await response.text()).slice(0, 300);
     throw new Error(`模型服务返回 ${response.status}${detail ? `：${detail}` : ''}`);
   }
@@ -285,7 +301,7 @@ async function requestModelCompletion({ system, user, temperature, maxCompletion
     const metadata = JSON.stringify(completionMeta(payload));
     if (retryOnEmpty) {
       console.warn(`模型未返回最终 content，正在重试一次：${metadata}`);
-      return requestModelCompletion({ system, user, temperature, maxCompletionTokens, disableThinking, retryOnEmpty: false });
+      return requestModelCompletion({ system, user, temperature, maxCompletionTokens, disableThinking, retryOnEmpty: false, retryOnTransient });
     }
     console.warn(`模型重试后仍未返回最终 content：${metadata}`);
     throw new Error('模型未返回最终内容，请重试');

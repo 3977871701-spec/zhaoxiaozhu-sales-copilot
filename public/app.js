@@ -24,6 +24,15 @@ const els = {
   copyButton: $('#copy-button'),
   saveButton: $('#save-button'),
   serviceState: $('#service-state'),
+  connectKeyButton: $('#connect-key-button'),
+  keyDialog: $('#key-dialog'),
+  keyForm: $('#key-form'),
+  closeKeyDialogButton: $('#close-key-dialog'),
+  keyInput: $('#key-input'),
+  keyRegion: $('#key-region'),
+  saveKeyButton: $('#save-key-button'),
+  clearKeyButton: $('#clear-key-button'),
+  keyDialogStatus: $('#key-dialog-status'),
   focusModeToggle: $('#focus-mode-toggle'),
   focusModeLabel: $('#focus-mode-label'),
   knowledgeStatus: $('#knowledge-status'),
@@ -56,6 +65,18 @@ const els = {
 
 const STORAGE_KEY = 'admission-ai-copilot-leads-v1';
 let service = { mode: 'demo', model: null };
+let serverService = { mode: 'demo', status: 'demo', model: null, message: '本地演示模式' };
+const browserMiniMax = {
+  apiKey: '',
+  baseUrl: '',
+  region: '',
+  verified: false
+};
+const MINI_MAX_MODEL = 'MiniMax-M3';
+const MINI_MAX_BASE_URLS = {
+  cn: 'https://api.minimaxi.com/v1',
+  global: 'https://api.minimax.io/v1'
+};
 let lastProfile = null;
 let lastResult = null;
 let leads = [];
@@ -66,6 +87,8 @@ let timerId = null;
 let callAnalyzeTimeout = null;
 let lastCallCoach = null;
 let lastCallSummary = '';
+let isApplyingProfileUpdates = false;
+const profileTouchedFields = new Set();
 let organizationKnowledge = {
   sources: [],
   conversationFramework: ['先确认需求', '资料不足时核验', '约定透明的下一步'],
@@ -429,25 +452,314 @@ async function copyText(value, successMessage) {
   showToast(successMessage);
 }
 
+function hasBrowserMiniMaxConnection() {
+  return Boolean(browserMiniMax.verified && browserMiniMax.apiKey && browserMiniMax.baseUrl);
+}
+
+function hasAvailableAIService() {
+  return hasBrowserMiniMaxConnection()
+    || (service.mode === 'ai' && service.status !== 'error');
+}
+
+function miniMaxConfigForRegion(value = els.keyRegion?.value) {
+  const selected = String(value || 'cn').trim().toLowerCase();
+  const isGlobal = selected === 'global'
+    || selected === 'international'
+    || selected.includes('minimax.io');
+  return {
+    region: isGlobal ? 'global' : 'cn',
+    baseUrl: isGlobal ? MINI_MAX_BASE_URLS.global : MINI_MAX_BASE_URLS.cn
+  };
+}
+
+function setKeyDialogStatus(message = '', state = '') {
+  if (!els.keyDialogStatus) return;
+  els.keyDialogStatus.textContent = message;
+  els.keyDialogStatus.dataset.state = state;
+  els.keyDialogStatus.className = `key-dialog-status${state === 'success' ? ' success' : state === 'error' ? ' error' : ''}`;
+}
+
+function renderServiceState({ resetToggle = false } = {}) {
+  const browserMode = service.mode === 'browser' && hasBrowserMiniMaxConnection();
+  const hasAI = browserMode || (service.mode === 'ai' && service.status !== 'error');
+  const hasConfigError = service.status === 'error';
+  const stateText = browserMode
+    ? '当前页面已接入 MiniMax M3'
+    : hasAI
+      ? `真实模型已连接 · ${service.model || '模型'}`
+      : hasConfigError
+        ? '模型密钥待更新'
+        : '本地演示模式';
+  els.serviceState.className = `service-state ${hasAI ? 'ready' : hasConfigError ? 'error' : 'demo'}`;
+  els.serviceState.replaceChildren(make('span', 'status-dot'), document.createTextNode(stateText));
+  els.aiToggle.disabled = !hasAI;
+  if (!hasAI || resetToggle) els.aiToggle.checked = false;
+  els.aiOptionText.textContent = browserMode
+    ? '临时接入的 MiniMax M3（刷新页面后需重新接入）'
+    : hasAI
+      ? `已连接 ${service.model || '模型'}`
+      : hasConfigError
+        ? (service.message || '模型密钥待更新，当前使用本地演示')
+        : '未配置 API，当前使用本地演示';
+}
+
+function openKeyDialog() {
+  if (!els.keyDialog) return;
+  setKeyDialogStatus('密钥仅保存在当前页面；刷新或重新打开后会清空。');
+  if (typeof els.keyDialog.showModal === 'function' && !els.keyDialog.open) els.keyDialog.showModal();
+  else els.keyDialog.hidden = false;
+  window.setTimeout(() => els.keyInput?.focus(), 0);
+}
+
+function closeKeyDialog() {
+  if (!els.keyDialog) return;
+  if (typeof els.keyDialog.close === 'function' && els.keyDialog.open) els.keyDialog.close();
+  else els.keyDialog.hidden = true;
+}
+
+function clearBrowserMiniMaxConnection({ quiet = false } = {}) {
+  browserMiniMax.apiKey = '';
+  browserMiniMax.baseUrl = '';
+  browserMiniMax.region = '';
+  browserMiniMax.verified = false;
+  if (els.keyInput) els.keyInput.value = '';
+  if (service.mode === 'browser') service = { ...serverService };
+  renderServiceState({ resetToggle: true });
+  if (!quiet) {
+    setKeyDialogStatus('已清除临时接入信息。刷新或关闭页面也会自动清空。', 'idle');
+    showToast('已清除当前页面的 MiniMax M3 连接。');
+  }
+}
+
+function connectionErrorMessage(responseStatus) {
+  if (responseStatus === 401 || responseStatus === 403) return '密钥无效，或选择的服务区域不匹配。';
+  if (responseStatus === 429) return '请求过于频繁，请稍后再试。';
+  if (responseStatus >= 500) return 'MiniMax 服务暂时不可用，请稍后再试。';
+  return '暂时无法验证连接，请检查网络、区域和密钥后重试。';
+}
+
+async function fetchWithTimeout(url, options = {}, timeoutMs = 30000) {
+  const controller = new AbortController();
+  const timer = window.setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await fetch(url, { ...options, signal: controller.signal });
+  } catch (error) {
+    if (error?.name === 'AbortError') throw new Error('连接超时，请稍后重试。');
+    throw new Error('浏览器无法连接 MiniMax 服务，请检查网络或浏览器的跨域限制。');
+  } finally {
+    window.clearTimeout(timer);
+  }
+}
+
+async function validateBrowserMiniMaxKey(apiKey, baseUrl) {
+  const response = await fetchWithTimeout(`${baseUrl}/models`, {
+    headers: { Authorization: `Bearer ${apiKey}` },
+    cache: 'no-store'
+  }, 15000);
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(connectionErrorMessage(response.status));
+  const models = Array.isArray(payload?.data) ? payload.data : [];
+  const hasM3 = models.some((item) => String(item?.id || item?.model || '') === MINI_MAX_MODEL);
+  if (!hasM3) throw new Error('该服务区域未检测到 MiniMax M3，请切换区域或确认该密钥权限。');
+}
+
+async function connectBrowserMiniMax() {
+  const apiKey = String(els.keyInput?.value || '').trim();
+  if (!apiKey) {
+    setKeyDialogStatus('请输入 MiniMax API 密钥后再验证。', 'error');
+    els.keyInput?.focus();
+    return;
+  }
+  const { region, baseUrl } = miniMaxConfigForRegion();
+  if (els.saveKeyButton) {
+    els.saveKeyButton.disabled = true;
+    els.saveKeyButton.textContent = '验证中…';
+  }
+  setKeyDialogStatus('正在验证 MiniMax M3 连接…', 'loading');
+  try {
+    await validateBrowserMiniMaxKey(apiKey, baseUrl);
+    browserMiniMax.apiKey = apiKey;
+    browserMiniMax.baseUrl = baseUrl;
+    browserMiniMax.region = region;
+    browserMiniMax.verified = true;
+    if (els.keyInput) els.keyInput.value = '';
+    service = {
+      mode: 'browser',
+      status: 'ready',
+      model: MINI_MAX_MODEL,
+      message: '当前页面已接入 MiniMax M3'
+    };
+    renderServiceState();
+    els.aiToggle.checked = true;
+    setKeyDialogStatus('MiniMax M3 已接入当前页面；刷新页面后需要重新输入。', 'success');
+    showToast('MiniMax M3 已临时接入，可开始生成。');
+    window.setTimeout(closeKeyDialog, 420);
+  } catch (error) {
+    setKeyDialogStatus(error.message || '验证失败，请稍后重试。', 'error');
+  } finally {
+    if (els.saveKeyButton) {
+      els.saveKeyButton.disabled = false;
+      els.saveKeyButton.textContent = '验证并接入';
+    }
+  }
+}
+
+function normalizedModelText(content) {
+  const source = Array.isArray(content)
+    ? content.map((part) => typeof part === 'string' ? part : (typeof part?.text === 'string' ? part.text : (typeof part?.content === 'string' ? part.content : ''))).join('')
+    : (typeof content === 'string' ? content : (typeof content?.text === 'string' ? content.text : (typeof content?.content === 'string' ? content.content : '')));
+  return source
+    .replace(/<think>[\s\S]*?<\/think>/gi, '')
+    .replace(/^\s*```(?:json)?\s*/i, '')
+    .replace(/\s*```\s*$/, '')
+    .trim();
+}
+
+function parseModelJson(content) {
+  const text = normalizedModelText(content);
+  try {
+    return JSON.parse(text);
+  } catch (error) {
+    const start = text.indexOf('{');
+    const end = text.lastIndexOf('}');
+    if (start >= 0 && end > start) return JSON.parse(text.slice(start, end + 1));
+    throw error;
+  }
+}
+
+function browserKnowledgeGuardrail() {
+  const blocked = asArray(organizationKnowledge.blockedTerms, 24).join('、') || '包过、保录、免考、免试、内部名额、快速拿证、全日制、代考';
+  const feeRule = cleanText(organizationKnowledge.catalogSummary?.feeRule, 220) || '未核验前禁止自动报价。';
+  const approvalRule = cleanText(organizationKnowledge.catalogSummary?.approvalRule, 220) || '资料不足时转人工或核验官方来源。';
+  return `\n资料边界：当前页面没有可直接对外发布的项目事实。${feeRule}${approvalRule} 禁用表述：${blocked}。`;
+}
+
+function browserConsultationSystemPrompt() {
+  return `你是成人学历提升招生销售副驾。只根据已脱敏的画像生成可人工审核的沟通草稿，不代表院校或主管部门作出承诺。
+
+必须遵守：
+1. 不得编造或确认资格、招生日期、院校专业、费用、优惠、学制、录取、毕业或学历用途；资料不足时明确“需要核验”。
+2. 禁止包过、保录、免考、免试、内部名额、快速拿证、全日制、代考等承诺；不施压、不制造虚假紧迫感。
+3. 不索取或复述手机号、身份证、银行卡、证件影像、精确住址等敏感信息。
+4. 面向学员的内容必须提醒“具体资格、费用、流程以当地官方通知及院校审核为准”，费用必须分项透明。
+5. 只输出一个合法 JSON 对象，禁止 Markdown 或解释。输出前检查引号、逗号、数组和对象闭合。
+
+固定 JSON：
+{
+  "summary":"明确区分已知和待核验",
+  "confirmedFacts":["..."],
+  "missingQuestions":["最多4个优先补问"],
+  "recommendedTracks":[{"name":"自学考试/成人高考/国家开放大学","fit":"可优先了解/可作为备选/暂不建议直接确认","reason":["..."],"verify":["需核验事项"]}],
+  "openingMessage":"可发给学员的首条消息",
+  "consultationScript":"一段合规需求沟通话术",
+  "objectionReplies":[{"objection":"顾虑","reply":"合规回应"}],
+  "followUpPlan":["2-4个动作"],
+  "complianceChecks":["发送前核对"],
+  "nextAction":"一个最合适的下一步"
+}${browserKnowledgeGuardrail()}`;
+}
+
+function browserCallSystemPrompt() {
+  return `你是成人学历提升咨询机构的电销实时通话副驾。分析已脱敏的通话文字，只给销售一条自然、合规的下一句建议；不替销售自动说话、发送消息、报价或承诺。
+
+必须遵守：
+1. 不得编造或确认资格、院校/专业、批次、价格、优惠、学历用途、通过率、录取、毕业时间；资料不足时说“需要核验”。
+2. 禁止包过、保录、免考、免试、内部名额、快速拿证、全日制、代报名、代学、替考等承诺或暗示。
+3. 不要索取或复述手机号、微信号、身份证、银行卡、验证码、证件材料；不要因年龄、性别等无关信息作判断。
+4. profileUpdates 只记录客户在本段通话明确说出的非敏感事实；不可根据既有画像、销售说法或常识推测。没有明确说出的字段必须为空字符串，concerns 必须为空数组。枚举字段只能逐字使用下方列出的选项；不要写“近期”“3-6小时”“费用别太高”等自由文本，不能匹配时留空。
+5. 只输出一个合法 JSON 对象，禁止 Markdown 或解释。输出前检查 JSON 闭合。
+
+固定 JSON：
+{
+  "stage":"需求澄清/费用核验/考试顾虑/学习节奏/建立信任/用途核验/方案比较/报名时点核验/高风险澄清等",
+  "signals":["最多4个信号"],
+  "profileUpdates":{"region":"","education":"仅可为初中及以下/高中/中专/大专/本科及以上之一或空字符串","goal":"仅可为专升本/高起专/第二学历/职业发展之一或空字符串","major":"","workStatus":"仅可为在职/待业/求职/全职带娃/学生/其他之一或空字符串","weeklyHours":"仅可为每周 1–3 小时/每周 3–6 小时/每周 6 小时以上之一或空字符串","urgency":"仅可为近期要报名/3–6 个月内/半年以后/只是了解之一或空字符串","budget":"仅可为预算敏感/可比较方案/以适合为主之一或空字符串","concerns":["仅可为担心没时间/担心考试/预算问题/学历用途/专业选择/机构资质"]},
+  "nextLine":"销售可说的下一句，不超过110字",
+  "nextQuestion":"一个自然追问，不超过70字",
+  "risk":"必须避免或核验的事项，不超过100字",
+  "summarySnippet":"供CRM使用的匿名摘要，只写已知和待核验",
+  "nextAction":"通话后一个明确动作"
+}${browserKnowledgeGuardrail()}`;
+}
+
+async function browserModelCompletion({ system, user, temperature = 0.3, maxCompletionTokens = 2400, includeThinkingControl = true, retryOnEmpty = true, retryOnTransient = true }) {
+  if (!hasBrowserMiniMaxConnection()) throw new Error('请先接入 MiniMax Key。');
+  const body = {
+    model: MINI_MAX_MODEL,
+    temperature,
+    max_completion_tokens: maxCompletionTokens,
+    messages: [
+      { role: 'system', content: system },
+      { role: 'user', content: user }
+    ]
+  };
+  if (includeThinkingControl) body.thinking = { type: 'disabled' };
+  const response = await fetchWithTimeout(`${browserMiniMax.baseUrl}/chat/completions`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${browserMiniMax.apiKey}`
+    },
+    body: JSON.stringify(body)
+  }, 60000);
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    if (response.status === 400 && includeThinkingControl) {
+      return browserModelCompletion({ system, user, temperature, maxCompletionTokens, includeThinkingControl: false, retryOnEmpty, retryOnTransient });
+    }
+    if (retryOnTransient && [429, 500, 502, 503, 504, 529].includes(response.status)) {
+      await new Promise((resolve) => window.setTimeout(resolve, 650));
+      return browserModelCompletion({ system, user, temperature, maxCompletionTokens, includeThinkingControl, retryOnEmpty, retryOnTransient: false });
+    }
+    throw new Error(connectionErrorMessage(response.status));
+  }
+  const content = payload?.choices?.[0]?.message?.content;
+  if (!normalizedModelText(content)) {
+    if (retryOnEmpty) return browserModelCompletion({ system, user, temperature, maxCompletionTokens, includeThinkingControl, retryOnEmpty: false, retryOnTransient });
+    throw new Error('MiniMax 未返回可用内容，请重试。');
+  }
+  return content;
+}
+
+async function browserModelJson(input) {
+  const content = await browserModelCompletion(input);
+  try {
+    return parseModelJson(content);
+  } catch {
+    throw new Error('MiniMax 返回格式不完整，请重试。');
+  }
+}
+
+async function generateWithBrowserMiniMax(profile) {
+  return browserModelJson({
+    system: browserConsultationSystemPrompt(),
+    user: `以下是已脱敏的学员画像。请输出销售副驾草稿：\n${JSON.stringify(modelProfile(profile))}`,
+    temperature: 0.35,
+    maxCompletionTokens: 3600
+  });
+}
+
+async function callCoachWithBrowserMiniMax(profile, transcript) {
+  return browserModelJson({
+    system: browserCallSystemPrompt(),
+    user: `已脱敏的学员画像：${JSON.stringify(modelProfile(profile))}\n\n已脱敏的最新通话转写：\n${cleanText(transcript, 8000)}`,
+    temperature: 0.3,
+    maxCompletionTokens: 2400
+  });
+}
+
 async function fetchServiceHealth() {
+  let nextService;
   try {
     const response = await fetch('/api/health', { cache: 'no-store' });
     if (!response.ok) throw new Error('health failed');
-    service = await response.json();
+    nextService = await response.json();
   } catch {
-    service = { mode: 'demo', status: 'demo', model: null, message: '本地演示模式' };
+    nextService = { mode: 'demo', status: 'demo', model: null, message: '本地演示模式' };
   }
-  const hasAI = service.mode === 'ai';
-  const hasConfigError = service.status === 'error';
-  els.serviceState.className = `service-state ${hasAI ? 'ready' : hasConfigError ? 'error' : 'demo'}`;
-  els.serviceState.replaceChildren(make('span', 'status-dot'), document.createTextNode(
-    hasAI ? `真实模型已连接 · ${service.model}` : hasConfigError ? '模型密钥待更新' : '本地演示模式'
-  ));
-  els.aiToggle.disabled = !hasAI;
-  els.aiToggle.checked = false;
-  els.aiOptionText.textContent = hasAI
-    ? `已连接 ${service.model}`
-    : hasConfigError ? (service.message || '模型密钥待更新，当前使用本地演示') : '未配置 API，当前使用本地演示';
+  serverService = { ...nextService };
+  if (!hasBrowserMiniMaxConnection()) service = { ...serverService };
+  renderServiceState({ resetToggle: !hasBrowserMiniMaxConnection() });
 }
 
 function renderKnowledgeStatus() {
@@ -493,6 +805,7 @@ async function fetchKnowledgeStatus() {
 }
 
 async function generateWithAI(profile) {
+  if (hasBrowserMiniMaxConnection()) return generateWithBrowserMiniMax(profile);
   const response = await fetch('/api/generate', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -515,13 +828,14 @@ async function handleGenerate(event) {
   lastResult = null;
   els.generateButton.disabled = true;
   els.generateButton.textContent = '正在生成…';
-  renderLoading(els.aiToggle.checked && service.mode === 'ai' ? '正在生成可审核的 AI 草稿…' : '正在按合规规则整理建议…');
+  const usingAI = els.aiToggle.checked && hasAvailableAIService();
+  renderLoading(usingAI ? '正在生成可审核的 AI 草稿…' : '正在按合规规则整理建议…');
   try {
     let source = '本地规则 + 机构流程参考';
     let draft;
-    if (els.aiToggle.checked && service.mode === 'ai') {
+    if (usingAI) {
       draft = await generateWithAI(profile);
-      source = `真实 AI · ${service.model}`;
+      source = hasBrowserMiniMaxConnection() ? '临时接入 · MiniMax M3' : `真实 AI · ${service.model}`;
     } else {
       await new Promise((resolve) => window.setTimeout(resolve, 320));
       draft = demoResult(profile);
@@ -779,9 +1093,204 @@ function transcriptSignals(text) {
   return [...new Set(signals)];
 }
 
+const profileUpdateLabels = {
+  region: '地区',
+  education: '学历',
+  goal: '目标',
+  major: '意向专业',
+  workStatus: '状态',
+  weeklyHours: '学习时间',
+  urgency: '决定时间',
+  budget: '预算倾向',
+  concerns: '顾虑'
+};
+
+function canonicalProfileValue(field, value) {
+  const text = cleanText(value, 80);
+  if (!text) return '';
+  const compact = text.replace(/\s+/g, '').replace(/[－—~至]/g, '-');
+  const aliases = {
+    education: { '初中': '初中及以下', '高中': '高中/中专', '中专': '高中/中专', '专科': '大专', '本科': '本科及以上' },
+    workStatus: { '待业': '待业/求职', '求职': '待业/求职', '找工作': '待业/求职', '上班': '在职' },
+    goal: {},
+    weeklyHours: {},
+    urgency: {},
+    budget: {}
+  };
+  const permitted = {
+    education: ['初中及以下', '高中/中专', '大专', '本科及以上'],
+    goal: ['专升本', '高起专', '第二学历', '职业发展'],
+    workStatus: ['在职', '待业/求职', '全职带娃', '学生', '其他'],
+    weeklyHours: ['每周 1–3 小时', '每周 3–6 小时', '每周 6 小时以上'],
+    urgency: ['近期要报名', '3–6 个月内', '半年以后', '只是了解'],
+    budget: ['预算敏感', '可比较方案', '以适合为主']
+  };
+  const normalized = aliases[field]?.[text] || text;
+  if (permitted[field]?.includes(normalized)) return normalized;
+
+  if (field === 'education') {
+    if (/初中/.test(compact)) return '初中及以下';
+    if (/(高中|中专)/.test(compact)) return '高中/中专';
+    if (/(大专|专科)/.test(compact)) return '大专';
+    if (/本科/.test(compact)) return '本科及以上';
+  }
+  if (field === 'goal') {
+    if (/(专升本|专科升本|升本科)/.test(compact)) return '专升本';
+    if (/(高起专|高中起专)/.test(compact)) return '高起专';
+    if (/第二学历/.test(compact)) return '第二学历';
+    if (/职业发展/.test(compact)) return '职业发展';
+  }
+  if (field === 'workStatus') {
+    if (/(在职|上班|工作中)/.test(compact)) return '在职';
+    if (/(待业|求职|找工作)/.test(compact)) return '待业/求职';
+    if (/全职带娃/.test(compact)) return '全职带娃';
+    if (/学生/.test(compact)) return '学生';
+  }
+  if (field === 'weeklyHours') {
+    if (/(?:1|一)-(?:3|三)(?:小时|h)/i.test(compact)) return '每周 1–3 小时';
+    if (/(?:3|三)-(?:6|六)(?:小时|h)/i.test(compact)) return '每周 3–6 小时';
+    if (/(?:6|六)(?:小时|h).*(?:以上|多)/i.test(compact)) return '每周 6 小时以上';
+  }
+  if (field === 'urgency') {
+    if (/(近期|尽快|马上|这两天|最近).*(?:报名|报考|决定)?/.test(compact)) return '近期要报名';
+    if (/(?:3|三)-(?:6|六)(?:个)?月/.test(compact)) return '3–6 个月内';
+    if (/(半年|6个?月以后|六个?月以后)/.test(compact)) return '半年以后';
+    if (/(只是了解|了解一下|先看看)/.test(compact)) return '只是了解';
+  }
+  if (field === 'budget') {
+    if (/(预算|费用|价格|贵|便宜|不高|太高)/.test(compact)) return '预算敏感';
+    if (/(比较|对比)/.test(compact)) return '可比较方案';
+    if (/(适合|合适)/.test(compact)) return '以适合为主';
+  }
+  return '';
+}
+
+function canonicalProfileConcern(value) {
+  const text = cleanText(value, 80);
+  const permitted = ['担心没时间', '担心考试', '预算问题', '学历用途', '专业选择', '机构资质'];
+  if (permitted.includes(text)) return text;
+  if (/(时间|忙|没空)/.test(text)) return '担心没时间';
+  if (/(考试|通过|难度)/.test(text)) return '担心考试';
+  if (/(预算|费用|价格|贵|便宜)/.test(text)) return '预算问题';
+  if (/(用途|认可|考公|考编|落户)/.test(text)) return '学历用途';
+  if (/(专业|选什么)/.test(text)) return '专业选择';
+  if (/(机构|资质|正规|信任|骗子)/.test(text)) return '机构资质';
+  return '';
+}
+
+function normalizeProfileUpdates(value) {
+  const input = value && typeof value === 'object' ? value : {};
+  return {
+    region: cleanText(input.region, 60),
+    education: canonicalProfileValue('education', input.education),
+    goal: canonicalProfileValue('goal', input.goal),
+    major: cleanText(input.major, 60),
+    workStatus: canonicalProfileValue('workStatus', input.workStatus),
+    weeklyHours: canonicalProfileValue('weeklyHours', input.weeklyHours),
+    urgency: canonicalProfileValue('urgency', input.urgency),
+    budget: canonicalProfileValue('budget', input.budget),
+    concerns: [...new Set(asArray(input.concerns, 6).map(canonicalProfileConcern).filter(Boolean))]
+  };
+}
+
+function profileFieldIsAvailable(element, field, emptyValues = []) {
+  if (!element || profileTouchedFields.has(field)) return false;
+  const value = String(element.value || '').trim();
+  return !value || emptyValues.includes(value);
+}
+
+function applyProfileUpdates(updates) {
+  const next = normalizeProfileUpdates(updates);
+  const changed = [];
+  const assign = (element, field, emptyValues = []) => {
+    const value = next[field];
+    if (!value || !profileFieldIsAvailable(element, field, emptyValues)) return;
+    element.value = value;
+    changed.push(profileUpdateLabels[field]);
+  };
+
+  isApplyingProfileUpdates = true;
+  try {
+    assign(els.region, 'region');
+    assign(els.education, 'education', ['不确定']);
+    assign(els.goal, 'goal', ['暂不确定']);
+    assign(els.major, 'major');
+    assign(els.workStatus, 'workStatus', ['未说明']);
+    assign(els.weeklyHours, 'weeklyHours', ['不确定']);
+    assign(els.urgency, 'urgency', ['只是了解']);
+    assign(els.budget, 'budget', ['未说明']);
+    const hasConcern = Boolean(document.querySelector('input[name="concern"]:checked'));
+    if (next.concerns.length && !hasConcern && !profileTouchedFields.has('concerns')) {
+      next.concerns.forEach((value) => {
+        const input = document.querySelector(`input[name="concern"][value="${CSS.escape(value)}"]`);
+        if (input) input.checked = true;
+      });
+      changed.push(profileUpdateLabels.concerns);
+    }
+  } finally {
+    isApplyingProfileUpdates = false;
+  }
+  if (changed.length) {
+    lastProfile = profileFromForm();
+    updateCallProfileSummary(lastProfile);
+  }
+  return [...new Set(changed)];
+}
+
+function profileUpdateFieldForElement(element) {
+  if (!element) return '';
+  if (element.name === 'concern') return 'concerns';
+  return {
+    region: 'region',
+    education: 'education',
+    goal: 'goal',
+    major: 'major',
+    'work-status': 'workStatus',
+    'weekly-hours': 'weeklyHours',
+    urgency: 'urgency',
+    budget: 'budget'
+  }[element.id] || '';
+}
+
+function markProfileFieldAsManual(event) {
+  if (isApplyingProfileUpdates) return;
+  const field = profileUpdateFieldForElement(event.target);
+  if (field) profileTouchedFields.add(field);
+}
+
+function localProfileUpdatesFromTranscript(transcript) {
+  const clientText = String(transcript ?? '')
+    .split(/\r?\n/)
+    .map((line) => cleanText(line, 1200))
+    .filter((line) => line && !/^\s*(销售|客服|老师)\s*[:：]/.test(line))
+    .join(' ');
+  const updates = { region: '', education: '', goal: '', major: '', workStatus: '', weeklyHours: '', urgency: '', budget: '', concerns: [] };
+  const regionNames = '北京|天津|上海|重庆|河北|山西|辽宁|吉林|黑龙江|江苏|浙江|安徽|福建|江西|山东|河南|湖北|湖南|广东|海南|四川|贵州|云南|陕西|甘肃|青海|台湾|内蒙古|广西|西藏|宁夏|新疆|香港|澳门';
+  const regionMatch = clientText.match(new RegExp(`(?:我(?:现在|目前)?(?:在|来自)|(?:所在|报名|报考)(?:地区|省市)(?:是|为)?)[，,、\\s]*(${regionNames})(?:省|市|自治区|特别行政区)?`));
+  if (regionMatch) updates.region = regionMatch[1];
+  const educationMatch = clientText.match(/(?:我(?:现在|目前)?(?:在[^。！？]{0,12})?[，,、\s]*(?:是|有|读的是)|(?:我的|最高)?学历(?:是|为)?)\s*(初中及以下|初中|高中|中专|大专|专科|本科及以上|本科)/);
+  if (educationMatch) updates.education = educationMatch[1];
+  const goalMatch = clientText.match(/(?:想|准备|打算|要)(?:报|读|升)?[^。！？，,]{0,5}(专升本|高起专|第二学历|职业发展)/);
+  if (goalMatch) updates.goal = goalMatch[1];
+  const workMatch = clientText.match(/(?:我(?:现在|目前)?[^。！？]{0,12}?|目前\s*)[，,、\s]*(在职|上班|待业|求职|找工作|全职带娃|学生)/);
+  if (workMatch) updates.workStatus = workMatch[1];
+  const weeklyMap = [
+    ['每周 1–3 小时', /(?:每周|一周).{0,5}(?:1|一)\s*(?:到|[-—~至])\s*(?:3|三)\s*(?:小时|h)/],
+    ['每周 3–6 小时', /(?:每周|一周).{0,5}(?:3|三)\s*(?:到|[-—~至])\s*(?:6|六)\s*(?:小时|h)/],
+    ['每周 6 小时以上', /(?:每周|一周).{0,7}(?:6|六)\s*(?:小时|h).{0,4}(?:以上|多|左右)/]
+  ];
+  updates.weeklyHours = weeklyMap.find(([, pattern]) => pattern.test(clientText))?.[0] || '';
+  if (/(?:近期|最近|这两天|尽快|马上).{0,12}(?:报名|报考|决定)/.test(clientText)) updates.urgency = '近期要报名';
+  if (/(?:预算.{0,10}(?:紧|有限|敏感|不高)|费用.{0,10}(?:贵|高|不高)|价格.{0,10}(?:贵|高|不高))/.test(clientText)) updates.budget = '预算敏感';
+  const signalConcernMap = { '费用顾虑': '预算问题', '时间顾虑': '担心没时间', '考试焦虑': '担心考试', '信任核验': '机构资质', '用途咨询': '学历用途' };
+  updates.concerns = transcriptSignals(clientText).map((signal) => signalConcernMap[signal]).filter(Boolean);
+  return normalizeProfileUpdates(updates);
+}
+
 function demoCallCoach(transcript, profile = lastProfile) {
   const safe = cleanText(transcript, 8000);
   const signals = transcriptSignals(safe);
+  const profileUpdates = localProfileUpdatesFromTranscript(transcript);
   const lastPart = safe.slice(-450);
   const has = (label) => signals.includes(label);
   let stage = '需求澄清';
@@ -852,6 +1361,7 @@ function demoCallCoach(transcript, profile = lastProfile) {
     risk,
     summarySnippet: `${stage}：${signalsOut.join('、')}。${profileHint} 最近对话关注点已记录，具体事项仍需核验。`,
     nextAction,
+    profileUpdates,
     latest: lastPart
   };
 }
@@ -867,6 +1377,7 @@ function normalizeCallCoach(value, transcript) {
     risk: cleanText(value.risk, 500) || fallback.risk,
     summarySnippet: cleanText(value.summarySnippet, 600) || fallback.summarySnippet,
     nextAction: cleanText(value.nextAction, 300) || fallback.nextAction,
+    profileUpdates: normalizeProfileUpdates(value.profileUpdates),
     latest: fallback.latest
   };
 }
@@ -896,15 +1407,18 @@ function scheduleCallAnalysis() {
     const text = els.transcript.value.trim();
     if (!text) return;
     lastCallCoach = demoCallCoach(text);
+    applyProfileUpdates(lastCallCoach.profileUpdates);
     renderCallCoach(lastCallCoach);
   }, 700);
 }
 
 async function callCoachWithAI(transcript) {
+  const profile = lastProfile || profileFromForm();
+  if (hasBrowserMiniMaxConnection()) return callCoachWithBrowserMiniMax(profile, transcript);
   const response = await fetch('/api/call-coach', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ profile: modelProfile(lastProfile || profileFromForm()), transcript: cleanText(transcript, 8000) })
+    body: JSON.stringify({ profile: modelProfile(profile), transcript: cleanText(transcript, 8000) })
   });
   const payload = await response.json().catch(() => ({}));
   if (!response.ok) throw new Error(payload.error || '通话分析服务暂时不可用');
@@ -920,15 +1434,18 @@ async function analyzeCurrentCall() {
   els.analyzeCall.disabled = true;
   els.analyzeCall.textContent = '分析中…';
   try {
-    if (els.aiToggle.checked && service.mode === 'ai') {
+    if (els.aiToggle.checked && hasAvailableAIService()) {
       lastCallCoach = normalizeCallCoach(await callCoachWithAI(transcript), transcript);
       renderCallCoach(lastCallCoach, 'AI 深度分析');
     } else {
       lastCallCoach = demoCallCoach(transcript);
       renderCallCoach(lastCallCoach);
     }
+    const updated = applyProfileUpdates(lastCallCoach.profileUpdates);
+    if (updated.length) showToast(`已根据通话补充画像：${updated.join('、')}。`);
   } catch (error) {
     lastCallCoach = demoCallCoach(transcript);
+    applyProfileUpdates(lastCallCoach.profileUpdates);
     renderCallCoach(lastCallCoach);
     showToast(`${error.message}；已使用本地提示。`);
   } finally {
@@ -937,31 +1454,63 @@ async function analyzeCurrentCall() {
   }
 }
 
-function finishCall() {
+async function finishCall() {
   const transcript = els.transcript.value.trim();
   if (!transcript) {
     showToast('没有通话内容可整理。');
     return;
   }
   stopListening();
-  lastCallCoach = demoCallCoach(transcript);
-  renderCallCoach(lastCallCoach);
-  const profile = lastProfile || profileFromForm();
-  const duration = els.callDuration.textContent;
-  lastCallSummary = [
-    '【通话纪要（请人工核对）】',
-    `通话时长：${duration}`,
-    `学员：${profile.alias || '未命名学员'}`,
-    `当前阶段：${lastCallCoach.stage}`,
-    `关注信号：${lastCallCoach.signals.join('、')}`,
-    `沟通摘要：${lastCallCoach.summarySnippet}`,
-    `建议下次动作：${lastCallCoach.nextAction}`,
-    '待核验：资格、当期项目/批次、费用及退款、学习/考试要求、用途表述。'
-  ].join('\n');
-  els.callSummary.textContent = lastCallSummary;
-  els.callSummary.hidden = false;
-  els.copyCallSummary.disabled = false;
-  showToast('通话纪要已生成，请确认事实后写入 CRM。');
+  els.finishCall.disabled = true;
+  els.finishCall.textContent = '整理中…';
+  try {
+    if (els.aiToggle.checked && hasAvailableAIService()) {
+      lastCallCoach = normalizeCallCoach(await callCoachWithAI(transcript), transcript);
+      renderCallCoach(lastCallCoach, 'AI 深度分析');
+    } else {
+      lastCallCoach = demoCallCoach(transcript);
+      renderCallCoach(lastCallCoach);
+    }
+    const updated = applyProfileUpdates(lastCallCoach.profileUpdates);
+    const profile = lastProfile || profileFromForm();
+    const duration = els.callDuration.textContent;
+    lastCallSummary = [
+      '【通话纪要（请人工核对）】',
+      `通话时长：${duration}`,
+      `学员：${profile.alias || '未命名学员'}`,
+      `当前阶段：${lastCallCoach.stage}`,
+      `关注信号：${lastCallCoach.signals.join('、')}`,
+      `沟通摘要：${lastCallCoach.summarySnippet}`,
+      `建议下次动作：${lastCallCoach.nextAction}`,
+      '待核验：资格、当期项目/批次、费用及退款、学习/考试要求、用途表述。'
+    ].join('\n');
+    els.callSummary.textContent = lastCallSummary;
+    els.callSummary.hidden = false;
+    els.copyCallSummary.disabled = false;
+    showToast(updated.length ? `通话纪要已生成；已补充画像：${updated.join('、')}。` : '通话纪要已生成，请确认事实后写入 CRM。');
+  } catch (error) {
+    lastCallCoach = demoCallCoach(transcript);
+    applyProfileUpdates(lastCallCoach.profileUpdates);
+    renderCallCoach(lastCallCoach);
+    showToast(`${error.message}；已使用本地提示生成纪要。`);
+    const profile = lastProfile || profileFromForm();
+    lastCallSummary = [
+      '【通话纪要（请人工核对）】',
+      `通话时长：${els.callDuration.textContent}`,
+      `学员：${profile.alias || '未命名学员'}`,
+      `当前阶段：${lastCallCoach.stage}`,
+      `关注信号：${lastCallCoach.signals.join('、')}`,
+      `沟通摘要：${lastCallCoach.summarySnippet}`,
+      `建议下次动作：${lastCallCoach.nextAction}`,
+      '待核验：资格、当期项目/批次、费用及退款、学习/考试要求、用途表述。'
+    ].join('\n');
+    els.callSummary.textContent = lastCallSummary;
+    els.callSummary.hidden = false;
+    els.copyCallSummary.disabled = false;
+  } finally {
+    els.finishCall.disabled = false;
+    els.finishCall.textContent = '生成通话纪要与跟进';
+  }
 }
 
 function resetCallUI() {
@@ -992,10 +1541,17 @@ function attachEvents() {
     input.addEventListener('input', () => setRangeDisplay(input, target));
   });
   els.form.addEventListener('submit', handleGenerate);
-  els.form.addEventListener('input', () => updateCallProfileSummary());
-  els.form.addEventListener('change', () => updateCallProfileSummary());
+  els.form.addEventListener('input', (event) => {
+    markProfileFieldAsManual(event);
+    updateCallProfileSummary();
+  });
+  els.form.addEventListener('change', (event) => {
+    markProfileFieldAsManual(event);
+    updateCallProfileSummary();
+  });
   els.form.addEventListener('reset', () => {
     window.setTimeout(() => {
+      profileTouchedFields.clear();
       setRangeDisplay(els.selfDiscipline, els.disciplineValue);
       setRangeDisplay(els.examAnxiety, els.anxietyValue);
       lastProfile = null;
@@ -1018,10 +1574,18 @@ function attachEvents() {
   });
   els.finishCall.addEventListener('click', finishCall);
   els.copyCallSummary.addEventListener('click', () => { if (lastCallSummary) copyText(lastCallSummary, '通话纪要已复制。'); });
+  els.connectKeyButton?.addEventListener('click', openKeyDialog);
+  els.closeKeyDialogButton?.addEventListener('click', closeKeyDialog);
+  els.keyForm?.addEventListener('submit', (event) => {
+    event.preventDefault();
+    void connectBrowserMiniMax();
+  });
+  els.clearKeyButton?.addEventListener('click', () => clearBrowserMiniMaxConnection());
   els.focusModeToggle.addEventListener('click', () => setFocusMode(!document.body.classList.contains('focus-mode')));
   document.addEventListener('keydown', (event) => {
     if (event.key === 'Escape' && document.body.classList.contains('focus-mode')) setFocusMode(false);
   });
+  window.addEventListener('pagehide', () => clearBrowserMiniMaxConnection({ quiet: true }));
 }
 
 async function init() {
