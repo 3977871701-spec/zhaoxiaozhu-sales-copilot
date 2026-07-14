@@ -84,6 +84,9 @@ let lastResult = null;
 let leads = [];
 let recognition = null;
 let wantsListening = false;
+let microphonePermissionRequestInFlight = false;
+let microphonePermissionVerified = false;
+let lastSpeechErrorMessage = '';
 let timerStartedAt = null;
 let timerId = null;
 let callAnalyzeTimeout = null;
@@ -1047,6 +1050,45 @@ function speechRecognitionSupported() {
   return Boolean(window.SpeechRecognition || window.webkitSpeechRecognition);
 }
 
+function microphonePermissionMessage(error) {
+  const messages = {
+    NotAllowedError: '麦克风权限被拒绝，请允许当前浏览器或 ChatGPT 使用麦克风。',
+    PermissionDeniedError: '麦克风权限被拒绝，请允许当前浏览器或 ChatGPT 使用麦克风。',
+    NotFoundError: '未找到可用麦克风，请检查耳机或电脑的输入设备。',
+    DevicesNotFoundError: '未找到可用麦克风，请检查耳机或电脑的输入设备。',
+    NotReadableError: '麦克风可能正被其他应用占用，请关闭占用麦克风的应用后重试。',
+    TrackStartError: '麦克风可能正被其他应用占用，请关闭占用麦克风的应用后重试。',
+    SecurityError: '当前页面无法请求麦克风权限，请改用受支持的浏览器。'
+  };
+  return messages[error?.name] || '无法访问麦克风，请检查系统和浏览器的麦克风权限。';
+}
+
+async function requestMicrophonePermission() {
+  const getUserMedia = navigator.mediaDevices?.getUserMedia;
+  if (typeof getUserMedia !== 'function') return true;
+
+  microphonePermissionRequestInFlight = true;
+  els.startListening.disabled = true;
+  els.stopListening.disabled = true;
+  els.recordDot.classList.remove('live');
+  els.speechState.textContent = '正在请求麦克风权限…';
+
+  try {
+    // 只用于触发并验证权限：立即释放音轨，不保存、不上传任何原始音频。
+    const stream = await getUserMedia.call(navigator.mediaDevices, { audio: true });
+    stream.getTracks().forEach((track) => track.stop());
+    microphonePermissionVerified = true;
+    return true;
+  } catch (error) {
+    const message = microphonePermissionMessage(error);
+    setListeningUI(false, message);
+    showToast(message);
+    return false;
+  } finally {
+    microphonePermissionRequestInFlight = false;
+  }
+}
+
 function initRecognition() {
   if (recognition || !speechRecognitionSupported()) return;
   const Recognition = window.SpeechRecognition || window.webkitSpeechRecognition;
@@ -1056,6 +1098,7 @@ function initRecognition() {
   recognition.interimResults = true;
   recognition.maxAlternatives = 1;
   recognition.onstart = () => {
+    lastSpeechErrorMessage = '';
     if (!timerStartedAt) {
       timerStartedAt = Date.now();
       timerId = window.setInterval(refreshTimer, 1000);
@@ -1079,14 +1122,16 @@ function initRecognition() {
   };
   recognition.onerror = (event) => {
     const messages = {
-      'not-allowed': '麦克风权限未开启',
-      'service-not-allowed': '浏览器不允许使用转写服务',
+      'not-allowed': '浏览器未允许语音转写，请使用 Chrome 或 Edge 打开本页并允许麦克风。',
+      'service-not-allowed': '当前浏览器不允许使用语音转写服务，请改用 Chrome 或 Edge。',
       'no-speech': '暂未识别到语音',
       'audio-capture': '未找到可用麦克风',
       network: '转写服务网络异常'
     };
+    const message = messages[event.error] || `转写异常：${event.error}`;
     if (event.error !== 'no-speech') wantsListening = false;
-    setListeningUI(false, messages[event.error] || `转写异常：${event.error}`);
+    lastSpeechErrorMessage = message;
+    setListeningUI(false, message);
   };
   recognition.onend = () => {
     els.livePartial.textContent = '';
@@ -1095,12 +1140,12 @@ function initRecognition() {
         try { recognition.start(); } catch { /* browser may still be stopping */ }
       }, 260);
     } else {
-      setListeningUI(false, '已停止转写');
+      setListeningUI(false, lastSpeechErrorMessage || '已停止转写');
     }
   };
 }
 
-function startListening() {
+async function startListening() {
   if (!els.callConsent.checked) {
     showToast('请先确认已完成通话实时转写所需的告知与授权。');
     return;
@@ -1109,17 +1154,30 @@ function startListening() {
     showToast('当前浏览器不支持麦克风转写，可粘贴电话系统转写内容。');
     return;
   }
+  if (microphonePermissionRequestInFlight) return;
+  if (!microphonePermissionVerified) {
+    const hasMicrophonePermission = await requestMicrophonePermission();
+    if (!hasMicrophonePermission) return;
+    // 部分 macOS 内置浏览器在权限弹窗关闭后会丢失首次点击的用户手势；第二次点击可可靠启动转写。
+    setListeningUI(false, '麦克风权限已开启，请再点击一次“开始麦克风转写”。');
+    showToast('麦克风权限已开启，请再点击一次“开始麦克风转写”。');
+    return;
+  }
   initRecognition();
   wantsListening = true;
   try {
     recognition.start();
   } catch {
-    // Recognition is likely already running; the UI remains accurate through callbacks.
+    wantsListening = false;
+    const message = '当前浏览器无法启动语音转写，请改用 Chrome 或 Edge，或粘贴电话系统转写。';
+    setListeningUI(false, message);
+    showToast(message);
   }
 }
 
 function stopListening() {
   wantsListening = false;
+  lastSpeechErrorMessage = '';
   if (recognition) {
     try { recognition.stop(); } catch { /* ignore */ }
   }
@@ -1779,6 +1837,7 @@ function attachEvents() {
     if (event.key === 'Escape' && document.body.classList.contains('focus-mode')) setFocusMode(false);
   });
   window.addEventListener('pagehide', () => {
+    stopListening();
     cancelAutoCallAnalysis({ invalidate: true });
     clearBrowserMiniMaxConnection({ quiet: true });
   });
