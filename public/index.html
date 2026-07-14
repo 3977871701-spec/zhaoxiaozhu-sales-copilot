@@ -1,0 +1,335 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="description" content="成人学历提升招生销售 AI 副驾：整理学员需求、生成合规沟通草稿与跟进计划。" />
+    <title>招小助 · 招生销售 AI 副驾</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <header class="topbar">
+      <a class="brand" href="#top" aria-label="招小助首页">
+        <span class="brand-mark" aria-hidden="true">招</span>
+        <span>招小助</span>
+        <small>销售副驾</small>
+      </a>
+      <nav class="topbar-nav" aria-label="工作区导航">
+        <a href="#call-mode">电销看板</a>
+        <a href="#profile-workspace">学员画像</a>
+        <a href="#leads">待跟进</a>
+      </nav>
+      <div class="service-state" id="service-state" aria-live="polite">
+        <span class="status-dot"></span>
+        正在检查服务
+      </div>
+      <button class="focus-mode-toggle" id="focus-mode-toggle" type="button" aria-pressed="false">
+        <span aria-hidden="true">⤢</span>
+        <span id="focus-mode-label">专注查看</span>
+      </button>
+    </header>
+
+    <div class="review-banner" role="status">
+      <div><span class="review-banner-mark" aria-hidden="true">✓</span><strong>AI 辅助草稿</strong><span>未核验内容不对外发送</span></div>
+      <a href="#knowledge-status">查看资料状态</a>
+    </div>
+
+    <main id="top">
+      <section class="intro shell">
+        <div>
+          <p class="eyebrow">ADMISSIONS COPILOT</p>
+          <h1>先看重点，<br /><em>再说下一句。</em></h1>
+          <p class="intro-copy">通话时优先看「下一句、接着问、需核验」。需要时再展开学员画像、方案草稿和待跟进记录。</p>
+          <div class="intro-actions">
+            <a class="action-link primary" href="#call-mode">进入电销看板 <span aria-hidden="true">→</span></a>
+            <a class="action-link ghost" href="#profile-workspace">录入学员画像</a>
+          </div>
+        </div>
+        <aside class="guardrail-card">
+          <span class="guardrail-icon" aria-hidden="true">✓</span>
+          <div>
+            <strong>查看顺序已优化</strong>
+            <p>通话时先看下一句和风险提醒；资格、收费、批次和毕业要求仍须按当期资料核验。</p>
+          </div>
+        </aside>
+      </section>
+
+      <section class="shell call-section" id="call-mode" aria-labelledby="call-title">
+        <div class="call-heading">
+          <div>
+            <p class="step">电销模式 / 实时通话副驾</p>
+            <h2 id="call-title">听懂顾虑，给你下一句。</h2>
+            <p>先看「下一句建议」，转写内容仅用于核对上下文。系统只给屏幕提示，不会自动替你说话、发送消息或自动报价。</p>
+          </div>
+          <div class="call-heading-side">
+            <div class="call-glance" aria-label="当前通话概览">
+              <div>
+                <span>当前阶段</span>
+                <strong id="call-stage-display">等待通话</strong>
+              </div>
+              <div>
+                <span>已知画像</span>
+                <strong id="call-profile-summary">待补：学历、地区、目标</strong>
+              </div>
+            </div>
+            <div class="call-status-box">
+              <span class="record-dot" id="record-dot"></span>
+              <span id="speech-state">未开始转写</span>
+              <b id="call-duration">00:00</b>
+            </div>
+          </div>
+        </div>
+        <div class="call-grid">
+          <section class="call-transcript-panel" aria-label="实时通话转写">
+            <div class="call-panel-top">
+              <div><strong>通话转写</strong><small>仅作上下文核对，请勿记录身份证、银行卡、验证码等敏感信息</small></div>
+              <div class="call-controls">
+                <button id="start-listening" class="button compact" type="button">开始麦克风转写</button>
+                <button id="stop-listening" class="button compact ghost" type="button" disabled>停止</button>
+              </div>
+            </div>
+            <label class="call-consent">
+              <input id="call-consent" type="checkbox" />
+              <span>我已完成通话录音/实时转写告知，并取得所需授权。</span>
+            </label>
+            <textarea id="call-transcript" rows="10" maxlength="8000" placeholder="实时转写会出现在这里；也可以粘贴电话系统导出的文字。建议标出“客户：”“销售：”以提高提示质量。"></textarea>
+            <div class="live-partial" id="live-partial" aria-live="polite"></div>
+            <div class="call-footnote">浏览器只能转写它能听到的麦克风音频。若使用座机、SIP 或云呼叫系统，要实现双方稳定转写，下一阶段可接入你们的电话系统/CTI 语音流。</div>
+          </section>
+
+          <section class="call-coach-panel" aria-label="实时销售提示" aria-live="polite">
+            <div class="call-panel-top">
+              <div><strong>实时销售提示</strong><small>从上到下：先说什么 → 接着问什么 → 哪些不能承诺</small></div>
+              <button id="analyze-call" class="text-button" type="button">立即分析</button>
+            </div>
+            <div class="signal-row" id="call-signals"><span class="signal neutral">等待通话内容</span></div>
+            <div class="coach-card priority" id="call-advice">
+              <div class="coach-card-header">
+                <span class="coach-label">下一句建议</span>
+                <button id="copy-next-line" class="copy-line-button" type="button">复制这一句</button>
+              </div>
+              <p>先让学员多说一点：他的目标、目前学历、所在省份，以及最担心的事情。不要在资料未核验前谈具体承诺。</p>
+            </div>
+            <div class="call-risk" id="call-risk"><b>先核验 / 不要承诺：</b>资格、费用、流程、毕业和学历用途均需查已审核资料或转人工确认。</div>
+            <div class="coach-card light" id="call-question-card">
+              <span class="coach-label">现在只差问</span>
+              <p>“为了不把方案给您讲错，我先确认一下您现在最高学历和所在省份，可以吗？”</p>
+            </div>
+            <div class="call-actions">
+              <button id="finish-call" class="button primary" type="button">生成通话纪要与跟进</button>
+              <button id="copy-call-summary" class="button ghost" type="button" disabled>复制纪要</button>
+            </div>
+            <div class="call-summary" id="call-summary" hidden></div>
+          </section>
+        </div>
+      </section>
+
+      <section class="shell knowledge-strip" id="knowledge-status" aria-live="polite">
+        <div class="knowledge-heading">
+          <span class="knowledge-mark" aria-hidden="true">↗</span>
+          <div>
+            <strong>机构资料已接入</strong>
+            <p>正在读取资料状态…</p>
+          </div>
+        </div>
+        <div class="knowledge-items" id="knowledge-items"></div>
+      </section>
+
+      <section class="shell workspace" id="profile-workspace" aria-label="学员咨询工作台">
+        <form class="panel profile-panel" id="profile-form">
+          <div class="panel-heading">
+            <div>
+              <p class="step">01 / 学员画像</p>
+              <h2>先了解，再建议</h2>
+            </div>
+            <span class="required-note"><i></i>必填项</span>
+          </div>
+
+          <div class="privacy-tip">
+            <span aria-hidden="true">◌</span>
+            <p>请勿填写手机号、身份证号、证件照片或支付信息。系统会尝试隐藏常见联系方式，但仍可能遗漏。</p>
+          </div>
+
+          <div class="form-grid">
+            <label class="field">
+              <span>学员称呼 / 备注 <b>仅本机保存</b></span>
+              <input id="lead-alias" name="alias" maxlength="24" placeholder="如：王女士（不要填手机号）" autocomplete="off" />
+            </label>
+            <label class="field">
+              <span>所在省市 <b>用于后续核验</b></span>
+              <input id="region" name="region" maxlength="60" placeholder="如：广东深圳" autocomplete="address-level1" />
+            </label>
+            <label class="field">
+              <span>最高学历 <i>*</i></span>
+              <select id="education" name="education" required>
+                <option value="">请选择</option>
+                <option>初中及以下</option>
+                <option>高中/中专</option>
+                <option>大专</option>
+                <option>本科及以上</option>
+                <option>不确定</option>
+              </select>
+            </label>
+            <label class="field">
+              <span>这次想解决什么 <i>*</i></span>
+              <select id="goal" name="goal" required>
+                <option value="">请选择</option>
+                <option>专升本</option>
+                <option>高起专</option>
+                <option>第二学历</option>
+                <option>职业发展</option>
+                <option>暂不确定</option>
+              </select>
+            </label>
+            <label class="field">
+              <span>意向专业</span>
+              <input id="major" name="major" maxlength="60" placeholder="如：行政管理；不确定可留空" autocomplete="off" />
+            </label>
+            <label class="field">
+              <span>目前状态</span>
+              <select id="work-status" name="workStatus">
+                <option value="未说明">请选择</option>
+                <option>在职</option>
+                <option>待业/求职</option>
+                <option>全职带娃</option>
+                <option>学生</option>
+                <option>其他</option>
+              </select>
+            </label>
+            <label class="field">
+              <span>每周可投入学习时间</span>
+              <select id="weekly-hours" name="weeklyHours">
+                <option value="不确定">暂不确定</option>
+                <option>每周 1–3 小时</option>
+                <option>每周 3–6 小时</option>
+                <option>每周 6 小时以上</option>
+              </select>
+            </label>
+            <label class="field">
+              <span>预计决定时间</span>
+              <select id="urgency" name="urgency">
+                <option>只是了解</option>
+                <option>近期要报名</option>
+                <option>3–6 个月内</option>
+                <option>半年以后</option>
+              </select>
+            </label>
+            <label class="field">
+              <span>预算倾向</span>
+              <select id="budget" name="budget">
+                <option>未说明</option>
+                <option>预算敏感</option>
+                <option>可比较方案</option>
+                <option>以适合为主</option>
+              </select>
+            </label>
+          </div>
+
+          <div class="sliders">
+            <label class="range-field">
+              <span>自主学习习惯 <b id="discipline-value">3 / 5</b></span>
+              <input id="self-discipline" name="selfDiscipline" type="range" min="1" max="5" value="3" />
+              <small>1 = 需要外部督促　5 = 能长期自律学习</small>
+            </label>
+            <label class="range-field">
+              <span>对考试的焦虑 <b id="anxiety-value">3 / 5</b></span>
+              <input id="exam-anxiety" name="examAnxiety" type="range" min="1" max="5" value="3" />
+              <small>1 = 比较从容　5 = 非常担心考试</small>
+            </label>
+          </div>
+
+          <fieldset class="concerns">
+            <legend>现在最在意什么？ <span>可多选</span></legend>
+            <div class="chip-list">
+              <label><input type="checkbox" name="concern" value="担心没时间" /><span>没时间</span></label>
+              <label><input type="checkbox" name="concern" value="担心考试" /><span>怕考试</span></label>
+              <label><input type="checkbox" name="concern" value="预算问题" /><span>费用</span></label>
+              <label><input type="checkbox" name="concern" value="学历用途" /><span>学历用途</span></label>
+              <label><input type="checkbox" name="concern" value="专业选择" /><span>专业选择</span></label>
+              <label><input type="checkbox" name="concern" value="机构资质" /><span>机构是否靠谱</span></label>
+            </div>
+          </fieldset>
+
+          <label class="field notes-field">
+            <span>沟通摘要 <b>选填，系统会尝试脱敏</b></span>
+            <textarea id="notes" name="notes" rows="4" maxlength="1800" placeholder="例如：目前在上班，想提升学历但担心没时间；不要粘贴身份证、电话、微信号或证件内容。"></textarea>
+          </label>
+
+          <div class="generation-options">
+            <label class="switch">
+              <input id="ai-toggle" type="checkbox" />
+              <span class="switch-track" aria-hidden="true"></span>
+              <span>使用真实 AI 生成 <small id="ai-option-text">未配置 API，当前使用本地演示</small></span>
+            </label>
+            <p>发送前会尝试脱敏，但仍可能遗漏；请勿输入敏感信息，所有对外内容仍须人工复核。</p>
+          </div>
+
+          <div class="form-actions">
+            <button class="button primary" id="generate-button" type="submit">
+              <span aria-hidden="true">✦</span> 生成咨询建议
+            </button>
+            <button class="button ghost" id="reset-button" type="reset">清空</button>
+          </div>
+        </form>
+
+        <section class="panel result-panel" aria-labelledby="result-title">
+          <div class="panel-heading result-heading">
+            <div>
+              <p class="step">02 / AI 建议</p>
+              <h2 id="result-title">销售沟通草稿</h2>
+            </div>
+            <div class="result-actions">
+              <button class="icon-button" id="copy-button" type="button" disabled title="复制结果">复制</button>
+              <button class="icon-button" id="save-button" type="button" disabled title="保存为待跟进线索">保存</button>
+            </div>
+          </div>
+
+          <div id="result-body" class="result-body empty-state" aria-live="polite">
+            <div class="empty-illustration" aria-hidden="true">
+              <span></span><span></span><span></span>
+            </div>
+            <h3>从一份真实画像开始</h3>
+            <p>填写左侧信息后，这里会生成「已确认事实、待补问题、可了解的路径、话术与跟进计划」。</p>
+            <div class="empty-rules">
+              <span>✓ 不替你承诺</span><span>✓ 不夸大政策</span><span>✓ 可人工修改</span>
+            </div>
+          </div>
+        </section>
+      </section>
+
+      <section class="shell leads-section" id="leads" aria-labelledby="lead-title">
+        <div class="section-heading">
+          <div>
+            <p class="step">03 / 本机待跟进</p>
+            <h2 id="lead-title">不让好线索掉下去</h2>
+          </div>
+          <div class="lead-tools">
+            <button class="text-button" id="export-button" type="button">导出 CSV</button>
+            <button class="text-button danger" id="clear-leads-button" type="button">清空本机记录</button>
+          </div>
+        </div>
+        <p class="local-note">仅存储在当前浏览器，不会自动发送消息、报名或收款。</p>
+        <div class="lead-list-wrap">
+          <table class="lead-table">
+            <thead>
+              <tr><th>学员</th><th>需求</th><th>当前建议</th><th>下一步</th><th>保存时间</th><th></th></tr>
+            </thead>
+            <tbody id="lead-list"></tbody>
+          </table>
+          <div class="no-leads" id="no-leads">还没有已保存的待跟进线索。</div>
+        </div>
+      </section>
+
+      <section class="shell compliance-strip">
+        <div class="strip-number">01</div>
+        <div><strong>这不是自动招生机器人</strong><p>它是销售的“副驾”：方案事实应来自已审核的本省、当期、院校/主管部门资料；资料缺失时，系统会提示你核验或转人工。</p></div>
+        <div class="strip-number">02</div>
+        <div><strong>发送前做三次核对</strong><p>核对资格与批次、核对费用与退款、核对学历用途表述。不要使用“包过、保录、免考、快速拿证”等说法。</p></div>
+      </section>
+    </main>
+
+    <footer>招小助 · 本地招生销售辅助工具 <span>所有对外内容请经人工审核</span></footer>
+    <div class="toast" id="toast" role="status" aria-live="polite"></div>
+    <script type="module" src="./app.js"></script>
+  </body>
+</html>
