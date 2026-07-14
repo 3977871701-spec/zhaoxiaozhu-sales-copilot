@@ -106,8 +106,16 @@
           <section class="call-coach-panel" aria-label="实时销售提示" aria-live="polite">
             <div class="call-panel-top">
               <div><strong>实时销售提示</strong><small>从上到下：先说什么 → 接着问什么 → 哪些不能承诺</small></div>
-              <button id="analyze-call" class="text-button" type="button">立即分析</button>
+              <div class="call-ai-toolbar">
+                <label class="auto-call-toggle" title="客户转写停顿后自动调用已接入的 AI 更新话术">
+                  <input id="auto-call-analysis" type="checkbox" disabled aria-describedby="auto-call-analysis-status" />
+                  <span class="auto-call-toggle-track" aria-hidden="true"></span>
+                  <span>自动实时 AI</span>
+                </label>
+                <button id="analyze-call" class="text-button" type="button">立即分析</button>
+              </div>
             </div>
+            <p class="auto-call-analysis-status" id="auto-call-analysis-status" role="status" aria-live="polite">先接入并启用真实 AI，才能开启自动实时分析。</p>
             <div class="signal-row" id="call-signals"><span class="signal neutral">等待通话内容</span></div>
             <div class="coach-card priority" id="call-advice">
               <div class="coach-card-header">

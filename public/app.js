@@ -52,6 +52,8 @@ const els = {
   callDuration: $('#call-duration'),
   callStageDisplay: $('#call-stage-display'),
   callProfileSummary: $('#call-profile-summary'),
+  autoCallAnalysis: $('#auto-call-analysis'),
+  autoCallAnalysisStatus: $('#auto-call-analysis-status'),
   analyzeCall: $('#analyze-call'),
   callSignals: $('#call-signals'),
   callAdvice: $('#call-advice'),
@@ -85,10 +87,19 @@ let wantsListening = false;
 let timerStartedAt = null;
 let timerId = null;
 let callAnalyzeTimeout = null;
+let autoCallAnalyzeTimeout = null;
+let autoCallAnalyzeInFlight = false;
+let transcriptRevision = 0;
+let lastAutoAnalyzedTranscript = '';
+let lastAutoAnalyzedAt = 0;
+let autoCallAnalysisPaused = false;
 let lastCallCoach = null;
 let lastCallSummary = '';
 let isApplyingProfileUpdates = false;
 const profileTouchedFields = new Set();
+const AUTO_CALL_ANALYSIS_DELAY_MS = 1800;
+const AUTO_CALL_ANALYSIS_MIN_NEW_CHARS = 12;
+const AUTO_CALL_ANALYSIS_MIN_INTERVAL_MS = 5000;
 let organizationKnowledge = {
   sources: [],
   conversationFramework: ['先确认需求', '资料不足时核验', '约定透明的下一步'],
@@ -479,6 +490,44 @@ function setKeyDialogStatus(message = '', state = '') {
   els.keyDialogStatus.className = `key-dialog-status${state === 'success' ? ' success' : state === 'error' ? ' error' : ''}`;
 }
 
+function setAutoCallAnalysisStatus(message, state = 'idle') {
+  if (!els.autoCallAnalysisStatus) return;
+  els.autoCallAnalysisStatus.textContent = message;
+  els.autoCallAnalysisStatus.dataset.state = state;
+}
+
+function autoCallAnalysisIsReady() {
+  return Boolean(!autoCallAnalysisPaused && els.autoCallAnalysis?.checked && els.aiToggle?.checked && hasAvailableAIService());
+}
+
+function cancelAutoCallAnalysis({ invalidate = false } = {}) {
+  window.clearTimeout(autoCallAnalyzeTimeout);
+  autoCallAnalyzeTimeout = null;
+  if (invalidate) transcriptRevision += 1;
+}
+
+function syncAutoCallAnalysisUI() {
+  if (!els.autoCallAnalysis) return;
+  const hasAI = hasAvailableAIService();
+  const canEnable = hasAI && els.aiToggle.checked;
+  els.autoCallAnalysis.disabled = !canEnable;
+  if (!canEnable && els.autoCallAnalysis.checked) {
+    els.autoCallAnalysis.checked = false;
+    cancelAutoCallAnalysis({ invalidate: true });
+  }
+  if (!hasAI) {
+    setAutoCallAnalysisStatus('先接入并启用真实 AI，才能开启自动实时分析。');
+  } else if (!els.aiToggle.checked) {
+    setAutoCallAnalysisStatus('已接入 AI：先打开“使用真实 AI 生成”，再开启自动分析。');
+  } else if (autoCallAnalysisPaused && els.autoCallAnalysis.checked) {
+    setAutoCallAnalysisStatus('通话已结束，自动实时分析已暂停。');
+  } else if (els.autoCallAnalysis.checked && !autoCallAnalyzeInFlight) {
+    setAutoCallAnalysisStatus('自动实时 AI 已开启：客户停顿约 2 秒后更新话术。', 'ready');
+  } else if (!els.autoCallAnalysis.checked) {
+    setAutoCallAnalysisStatus('自动模式关闭：仍会给出本地即时提示。');
+  }
+}
+
 function renderServiceState({ resetToggle = false } = {}) {
   const browserMode = service.mode === 'browser' && hasBrowserMiniMaxConnection();
   const hasAI = browserMode || (service.mode === 'ai' && service.status !== 'error');
@@ -501,6 +550,7 @@ function renderServiceState({ resetToggle = false } = {}) {
       : hasConfigError
         ? (service.message || '模型密钥待更新，当前使用本地演示')
         : '未配置 API，当前使用本地演示';
+  syncAutoCallAnalysisUI();
 }
 
 function openKeyDialog() {
@@ -591,6 +641,7 @@ async function connectBrowserMiniMax() {
     };
     renderServiceState();
     els.aiToggle.checked = true;
+    syncAutoCallAnalysisUI();
     setKeyDialogStatus('MiniMax M3 已接入当前页面；刷新页面后需要重新输入。', 'success');
     showToast('MiniMax M3 已临时接入，可开始生成。');
     window.setTimeout(closeKeyDialog, 420);
@@ -1022,7 +1073,7 @@ function initRecognition() {
     if (finalParts.length) {
       const existing = els.transcript.value.trim();
       els.transcript.value = `${existing}${existing ? '\n' : ''}${finalParts.join(' ')}`.slice(-8000);
-      scheduleCallAnalysis();
+      handleTranscriptChange();
     }
     els.livePartial.textContent = interim ? `正在识别：${interim}` : '';
   };
@@ -1398,7 +1449,9 @@ function renderCallCoach(coach, source = '本地即时提示') {
   if (questionText) questionText.textContent = coach.nextQuestion;
   els.callRisk.replaceChildren(make('b', '', '先核验 / 不要承诺：'), document.createTextNode(coach.risk));
   if (els.callStageDisplay) els.callStageDisplay.textContent = coach.stage;
-  els.analyzeCall.textContent = source === 'AI 深度分析' ? '已 AI 分析' : '立即分析';
+  if (!autoCallAnalyzeInFlight) {
+    els.analyzeCall.textContent = source.includes('AI') ? '已 AI 分析' : '立即分析';
+  }
 }
 
 function scheduleCallAnalysis() {
@@ -1410,6 +1463,37 @@ function scheduleCallAnalysis() {
     applyProfileUpdates(lastCallCoach.profileUpdates);
     renderCallCoach(lastCallCoach);
   }, 700);
+}
+
+function hasMeaningfulNewTranscript(text) {
+  if (!lastAutoAnalyzedTranscript) return text.length >= AUTO_CALL_ANALYSIS_MIN_NEW_CHARS;
+  const delta = text.startsWith(lastAutoAnalyzedTranscript)
+    ? text.slice(lastAutoAnalyzedTranscript.length).trim()
+    : text;
+  if (delta.length >= AUTO_CALL_ANALYSIS_MIN_NEW_CHARS) return true;
+  const previousSignals = new Set(transcriptSignals(lastAutoAnalyzedTranscript));
+  return transcriptSignals(text).some((signal) => !previousSignals.has(signal));
+}
+
+function scheduleAutoCallAnalysis() {
+  cancelAutoCallAnalysis();
+  const text = els.transcript.value.trim();
+  if (!autoCallAnalysisIsReady() || !text || text === lastAutoAnalyzedTranscript) return;
+  if (!hasMeaningfulNewTranscript(text)) {
+    setAutoCallAnalysisStatus('已收到新转写，继续补充一句后会自动更新 AI 话术。', 'ready');
+    return;
+  }
+  const remainingInterval = Math.max(0, AUTO_CALL_ANALYSIS_MIN_INTERVAL_MS - (Date.now() - lastAutoAnalyzedAt));
+  const delay = Math.max(AUTO_CALL_ANALYSIS_DELAY_MS, remainingInterval);
+  setAutoCallAnalysisStatus(`已收到新转写，停顿后约 ${Math.ceil(delay / 1000)} 秒自动更新话术。`, 'ready');
+  autoCallAnalyzeTimeout = window.setTimeout(() => { void runAutoCallAnalysis(); }, delay);
+}
+
+function handleTranscriptChange() {
+  transcriptRevision += 1;
+  autoCallAnalysisPaused = false;
+  scheduleCallAnalysis();
+  scheduleAutoCallAnalysis();
 }
 
 async function callCoachWithAI(transcript) {
@@ -1425,6 +1509,57 @@ async function callCoachWithAI(transcript) {
   return payload.result;
 }
 
+async function runAutoCallAnalysis() {
+  autoCallAnalyzeTimeout = null;
+  const transcript = els.transcript.value.trim();
+  if (!autoCallAnalysisIsReady() || !transcript || transcript === lastAutoAnalyzedTranscript || !hasMeaningfulNewTranscript(transcript)) return;
+  if (autoCallAnalyzeInFlight) return;
+
+  const requestRevision = transcriptRevision;
+  let resolvedWithAI = false;
+  autoCallAnalyzeInFlight = true;
+  els.analyzeCall.disabled = true;
+  els.analyzeCall.textContent = '自动分析中…';
+  setAutoCallAnalysisStatus('正在根据最新客户转写生成下一句建议…', 'busy');
+  try {
+    const coach = normalizeCallCoach(await callCoachWithAI(transcript), transcript);
+    const isLatest = autoCallAnalysisIsReady()
+      && requestRevision === transcriptRevision
+      && els.transcript.value.trim() === transcript;
+    if (!isLatest) return;
+    lastCallCoach = coach;
+    renderCallCoach(lastCallCoach, 'AI 自动实时分析');
+    const updated = applyProfileUpdates(lastCallCoach.profileUpdates);
+    lastAutoAnalyzedTranscript = transcript;
+    lastAutoAnalyzedAt = Date.now();
+    resolvedWithAI = true;
+    setAutoCallAnalysisStatus(updated.length
+      ? `AI 已更新话术，并补充画像：${updated.join('、')}。`
+      : 'AI 已根据最新客户发言更新话术。', 'ready');
+  } catch {
+    const isLatest = autoCallAnalysisIsReady()
+      && requestRevision === transcriptRevision
+      && els.transcript.value.trim() === transcript;
+    if (!isLatest) return;
+    lastCallCoach = demoCallCoach(transcript);
+    applyProfileUpdates(lastCallCoach.profileUpdates);
+    renderCallCoach(lastCallCoach);
+    lastAutoAnalyzedTranscript = transcript;
+    lastAutoAnalyzedAt = Date.now();
+    setAutoCallAnalysisStatus('AI 暂时不可用，当前继续使用本地即时提示。', 'error');
+  } finally {
+    autoCallAnalyzeInFlight = false;
+    els.analyzeCall.disabled = false;
+    if (autoCallAnalysisIsReady() && els.transcript.value.trim() !== lastAutoAnalyzedTranscript) {
+      scheduleAutoCallAnalysis();
+    } else if (autoCallAnalysisIsReady()) {
+      els.analyzeCall.textContent = resolvedWithAI ? '自动已更新' : '本地提示';
+    } else {
+      syncAutoCallAnalysisUI();
+    }
+  }
+}
+
 async function analyzeCurrentCall() {
   const transcript = els.transcript.value.trim();
   if (!transcript) {
@@ -1434,7 +1569,8 @@ async function analyzeCurrentCall() {
   els.analyzeCall.disabled = true;
   els.analyzeCall.textContent = '分析中…';
   try {
-    if (els.aiToggle.checked && hasAvailableAIService()) {
+    const usingAI = els.aiToggle.checked && hasAvailableAIService();
+    if (usingAI) {
       lastCallCoach = normalizeCallCoach(await callCoachWithAI(transcript), transcript);
       renderCallCoach(lastCallCoach, 'AI 深度分析');
     } else {
@@ -1442,6 +1578,13 @@ async function analyzeCurrentCall() {
       renderCallCoach(lastCallCoach);
     }
     const updated = applyProfileUpdates(lastCallCoach.profileUpdates);
+    if (usingAI && els.autoCallAnalysis?.checked) {
+      lastAutoAnalyzedTranscript = transcript;
+      lastAutoAnalyzedAt = Date.now();
+      setAutoCallAnalysisStatus(updated.length
+        ? `已手动 AI 分析，并补充画像：${updated.join('、')}。`
+        : '已手动 AI 分析；后续新转写会自动更新。', 'ready');
+    }
     if (updated.length) showToast(`已根据通话补充画像：${updated.join('、')}。`);
   } catch (error) {
     lastCallCoach = demoCallCoach(transcript);
@@ -1461,6 +1604,9 @@ async function finishCall() {
     return;
   }
   stopListening();
+  autoCallAnalysisPaused = true;
+  cancelAutoCallAnalysis({ invalidate: true });
+  syncAutoCallAnalysisUI();
   els.finishCall.disabled = true;
   els.finishCall.textContent = '整理中…';
   try {
@@ -1515,6 +1661,10 @@ async function finishCall() {
 
 function resetCallUI() {
   stopListening();
+  cancelAutoCallAnalysis({ invalidate: true });
+  autoCallAnalysisPaused = false;
+  lastAutoAnalyzedTranscript = '';
+  lastAutoAnalyzedAt = 0;
   timerStartedAt = null;
   els.callDuration.textContent = '00:00';
   els.transcript.value = '';
@@ -1530,6 +1680,32 @@ function resetCallUI() {
     nextQuestion: '“为了不把方案给您讲错，我先确认一下您现在最高学历和所在省份，可以吗？”',
     risk: '资格、费用、流程、毕业和学历用途均需查已审核资料或转人工确认。'
   });
+  syncAutoCallAnalysisUI();
+}
+
+function handleAutoCallAnalysisToggle() {
+  if (!els.autoCallAnalysis) return;
+  if (!els.autoCallAnalysis.checked) {
+    cancelAutoCallAnalysis({ invalidate: true });
+    syncAutoCallAnalysisUI();
+    return;
+  }
+  if (!hasAvailableAIService() || !els.aiToggle.checked) {
+    els.autoCallAnalysis.checked = false;
+    syncAutoCallAnalysisUI();
+    return;
+  }
+  if (!els.callConsent.checked) {
+    els.autoCallAnalysis.checked = false;
+    syncAutoCallAnalysisUI();
+    showToast('请先确认已完成通话实时转写所需的告知与授权。');
+    return;
+  }
+  autoCallAnalysisPaused = false;
+  lastAutoAnalyzedTranscript = '';
+  lastAutoAnalyzedAt = 0;
+  syncAutoCallAnalysisUI();
+  scheduleAutoCallAnalysis();
 }
 
 function attachEvents() {
@@ -1566,7 +1742,24 @@ function attachEvents() {
   els.clearLeadsButton.addEventListener('click', clearLeads);
   els.startListening.addEventListener('click', startListening);
   els.stopListening.addEventListener('click', stopListening);
-  els.transcript.addEventListener('input', scheduleCallAnalysis);
+  els.transcript.addEventListener('input', handleTranscriptChange);
+  els.autoCallAnalysis?.addEventListener('change', handleAutoCallAnalysisToggle);
+  els.aiToggle.addEventListener('change', () => {
+    if (!els.aiToggle.checked && els.autoCallAnalysis?.checked) {
+      els.autoCallAnalysis.checked = false;
+      cancelAutoCallAnalysis({ invalidate: true });
+    }
+    syncAutoCallAnalysisUI();
+    if (autoCallAnalysisIsReady()) scheduleAutoCallAnalysis();
+  });
+  els.callConsent.addEventListener('change', () => {
+    if (!els.callConsent.checked && els.autoCallAnalysis?.checked) {
+      els.autoCallAnalysis.checked = false;
+      cancelAutoCallAnalysis({ invalidate: true });
+      syncAutoCallAnalysisUI();
+      showToast('已关闭自动实时 AI 分析。');
+    }
+  });
   els.analyzeCall.addEventListener('click', analyzeCurrentCall);
   els.copyNextLine.addEventListener('click', () => {
     const nextLine = lastCallCoach?.nextLine || els.callAdvice.querySelector('p')?.textContent || '';
@@ -1585,7 +1778,10 @@ function attachEvents() {
   document.addEventListener('keydown', (event) => {
     if (event.key === 'Escape' && document.body.classList.contains('focus-mode')) setFocusMode(false);
   });
-  window.addEventListener('pagehide', () => clearBrowserMiniMaxConnection({ quiet: true }));
+  window.addEventListener('pagehide', () => {
+    cancelAutoCallAnalysis({ invalidate: true });
+    clearBrowserMiniMaxConnection({ quiet: true });
+  });
 }
 
 async function init() {

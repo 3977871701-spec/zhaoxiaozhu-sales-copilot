@@ -216,6 +216,20 @@ input[type="range"]::-moz-range-thumb { width: 11px; height: 11px; border: 3px s
 .call-panel-top strong { display: block; color: #fff; font-size: 14px; }
 .call-panel-top small { display: block; color: #a9c0b0; font-size: 10px; margin-top: 4px; }
 .call-controls { display: flex; gap: 7px; }
+.call-ai-toolbar { display: flex; align-items: center; gap: 8px; flex: 0 0 auto; }
+.auto-call-toggle { display: inline-flex; align-items: center; gap: 6px; color: #c5dccb; font-size: 10px; font-weight: 760; white-space: nowrap; cursor: pointer; }
+.auto-call-toggle input { position: absolute; opacity: 0; }
+.auto-call-toggle-track { width: 27px; height: 16px; padding: 2px; flex: 0 0 auto; border-radius: 99px; background: rgba(195,221,202,.34); transition: .18s; }
+.auto-call-toggle-track::after { display: block; width: 12px; height: 12px; content: ""; border-radius: 50%; background: #f7fcf7; box-shadow: 0 1px 3px rgba(0,0,0,.24); transition: .18s; }
+.auto-call-toggle input:checked + .auto-call-toggle-track { background: #78b98b; }
+.auto-call-toggle input:checked + .auto-call-toggle-track::after { transform: translateX(11px); }
+.auto-call-toggle input:focus-visible + .auto-call-toggle-track { outline: 3px solid rgba(167,223,183,.35); outline-offset: 2px; }
+.auto-call-toggle input:disabled + .auto-call-toggle-track { opacity: .45; }
+.auto-call-toggle:has(input:disabled) { cursor: not-allowed; opacity: .7; }
+.auto-call-analysis-status { min-height: 16px; margin: -4px 0 10px; color: #9db6a4; font-size: 10px; line-height: 1.45; }
+.auto-call-analysis-status[data-state="ready"] { color: #a9d9b5; }
+.auto-call-analysis-status[data-state="busy"] { color: #d4e7b7; }
+.auto-call-analysis-status[data-state="error"] { color: #ffc8ae; }
 .button.compact { height: 34px; padding: 0 10px; border-radius: 7px; font-size: 11px; color: #164438; background: #d5eadb; box-shadow: none; }
 .button.compact:hover { background: #eff8f0; }
 .button.compact.ghost { color: #d5e7db; border-color: rgba(213,231,219,.3); background: transparent; }
@@ -372,6 +386,7 @@ body.focus-mode .call-summary { margin-top: auto; }
   .call-glance { width: 100%; }
   .call-status-box { width: 100%; grid-template-columns: auto 1fr; }
   .call-controls { flex-wrap: wrap; justify-content: flex-end; }
+  .call-ai-toolbar { flex-wrap: wrap; justify-content: flex-end; }
   .button.compact { min-height: 40px; }
   #call-transcript { min-height: 205px; }
   .call-coach-panel, .call-transcript-panel { padding: 16px; }
@@ -380,6 +395,8 @@ body.focus-mode .call-summary { margin-top: auto; }
   .call-risk { font-size: 11px; }
   .call-actions { flex-wrap: wrap; }
   .call-actions .button { min-height: 44px; }
+  .call-coach-panel .call-panel-top { align-items: stretch; flex-direction: column; }
+  .call-ai-toolbar { justify-content: space-between; width: 100%; }
   .key-dialog { width: min(100% - 20px, 500px); max-height: calc(100dvh - 20px); }
   .key-dialog-card { padding: 20px 17px; border-radius: 13px; }
   .key-dialog-heading h2 { font-size: 21px; }
